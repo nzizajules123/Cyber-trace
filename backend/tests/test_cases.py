@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import auth_rate_limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -17,6 +18,7 @@ from app.models.case import Case
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
+    auth_rate_limiter.reset()
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -32,6 +34,18 @@ def client() -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     app.state.test_session_factory = test_session_factory
     with TestClient(app) as test_client:
+        reg = test_client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "lead@cybertrace.test",
+                "fullName": "Lead Investigator",
+                "password": "StrongPassword123!",
+                "organizationName": "Test Forensics Lab",
+            },
+        )
+        assert reg.status_code == 201, reg.text
+        token = reg.json()["accessToken"]
+        test_client.headers.update({"Authorization": f"Bearer {token}"})
         yield test_client
     app.dependency_overrides.clear()
     del app.state.test_session_factory

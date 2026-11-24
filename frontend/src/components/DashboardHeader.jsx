@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 
 import Icon from "./Icon.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 function getInitials(name = "") {
   return name
@@ -22,11 +24,22 @@ export default function DashboardHeader({
   pageTitle = "Dashboard",
   showSearch = true,
 }) {
+  const { user, organization, role: authRole, logout } = useAuth();
+  const navigate = useNavigate();
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const menusRef = useRef(null);
-  const displayName = currentUser?.displayName || "Identity unavailable";
-  const role = currentUser?.role || "No authenticated session";
+  const displayName = user?.fullName || currentUser?.displayName || "Identity unavailable";
+  const formattedRole = authRole
+    ? authRole.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : currentUser?.role || "No authenticated session";
+  const orgName = organization?.name || currentUser?.organizationName || "";
+
+  const handleLogout = async () => {
+    setProfileOpen(false);
+    await logout();
+    navigate("/login", { replace: true });
+  };
 
   useEffect(() => {
     if (!profileOpen && !notificationsOpen) return undefined;
@@ -123,15 +136,20 @@ export default function DashboardHeader({
             <span className="avatar">{getInitials(displayName)}</span>
             <span className="profile-copy">
               <strong>{displayName}</strong>
-              <small>{role}</small>
+              <small>{formattedRole}</small>
             </span>
             <Icon name="down" size={14} />
           </button>
           {profileOpen && (
             <div className="header-popover profile-popover">
               <strong>{displayName}</strong>
-              <p>{role}</p>
-              <small>Identity is supplied by the active session.</small>
+              <p>{formattedRole}{orgName ? ` · ${orgName}` : ""}</p>
+              <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                <Link className="secondary-button" to="/settings" onClick={() => setProfileOpen(false)}>Settings</Link>
+                {user && (
+                  <button className="danger-button" type="button" onClick={handleLogout}>Sign out</button>
+                )}
+              </div>
             </div>
           )}
         </div>

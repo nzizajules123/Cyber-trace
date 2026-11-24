@@ -333,7 +333,11 @@ export function EvidenceRepositoryPage() {
               <tbody>
                 {items.map((item) => (
                   <tr key={item.evidenceCode}>
-                    <td><span className="case-id">{item.evidenceCode}</span></td>
+                    <td>
+                      <Link className="case-id case-title-link" to={`/evidence/${encodeURIComponent(item.evidenceCode)}`}>
+                        {item.evidenceCode}
+                      </Link>
+                    </td>
                     <td>
                       <strong className="case-title">{item.originalFilename}</strong>
                       <div className="forensic-submeta">

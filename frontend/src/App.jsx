@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Link, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { CaseTimelinePage, ForensicFindingsPage, LogAnalysisPage } from "./components/AnalysisPages.jsx";
+import { LoginPage, RecoverPasswordPage, RegisterPage } from "./components/AuthPages.jsx";
 import { CaseDetailsPage, CasesPage, EditCasePage, NewCasePage } from "./components/CaseManagement.jsx";
 import { AnalyticsPanels, MetricCards, SectionHeading } from "./components/DashboardSections.jsx";
 import DigitalFootprintPage from "./components/DigitalFootprintPage.jsx";
@@ -12,9 +13,33 @@ import {
 } from "./components/EvidencePages.jsx";
 import Icon from "./components/Icon.jsx";
 import { ActivityTimelinePanel, CasesPanel, EvidenceIntegrityPanel } from "./components/InvestigationPanels.jsx";
+import {
+  AuditLogsPage,
+  EventCorrelationPage,
+  EvidenceDetailPage,
+  InvestigatorsPage,
+  SettingsPage,
+} from "./components/ManagementPages.jsx";
 import ReportsPage from "./components/ReportsPage.jsx";
 import WorkspaceLayout from "./components/WorkspaceLayout.jsx";
+import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
 import { loadDashboardData } from "./services/dashboardApi.js";
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, loading } = useAuth();
+  const location = useLocation();
+  if (loading) {
+    return (
+      <div className="auth-shell">
+        <div className="case-loading">Verifying investigator session…</div>
+      </div>
+    );
+  }
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return children;
+}
 
 function DashboardError({ message, onRetry }) {
   return (
@@ -138,53 +163,35 @@ function DashboardPage() {
   );
 }
 
-function ModulePlaceholder({ title }) {
-  return (
-    <WorkspaceLayout mode="not-implemented" pageTitle={title} showSearch={false}>
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow"><span className="eyebrow-dot" /> CYBERTRACE WORKSPACE</span>
-          <h1>{title}</h1>
-          <p>This destination is available in navigation; its investigation workflow has not been implemented yet.</p>
-        </div>
-      </div>
-      <section className="panel module-placeholder">
-        <span className="empty-state-mark"><Icon name="shield" size={18} /></span>
-        <h2>Module not implemented</h2>
-        <p>No data or actions are simulated on this page. Case Management is the currently available operational module.</p>
-        <Link className="secondary-button" to="/cases">Open Cases</Link>
-      </section>
-    </WorkspaceLayout>
-  );
-}
-
-function NotFoundPage() {
-  return <ModulePlaceholder title="Page not found" />;
-}
-
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/cases" element={<CasesPage />} />
-        <Route path="/cases/new" element={<NewCasePage />} />
-        <Route path="/cases/:caseNumber/edit" element={<EditCasePage />} />
-        <Route path="/cases/:caseNumber" element={<CaseDetailsPage />} />
-        <Route path="/case-timeline" element={<CaseTimelinePage />} />
-        <Route path="/evidence" element={<EvidenceRepositoryPage />} />
-        <Route path="/evidence/integrity" element={<EvidenceIntegrityPage />} />
-        <Route path="/evidence/chain-of-custody" element={<ChainOfCustodyPage />} />
-        <Route path="/analysis/digital-footprint" element={<DigitalFootprintPage />} />
-        <Route path="/analysis/log-analysis" element={<LogAnalysisPage />} />
-        <Route path="/analysis/event-correlation" element={<ModulePlaceholder title="Event Correlation" />} />
-        <Route path="/analysis/findings" element={<ForensicFindingsPage />} />
-        <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/investigators" element={<ModulePlaceholder title="Investigators" />} />
-        <Route path="/audit-logs" element={<ModulePlaceholder title="Audit Logs" />} />
-        <Route path="/settings" element={<ModulePlaceholder title="Settings" />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/recover-password" element={<RecoverPasswordPage />} />
+          <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+          <Route path="/cases" element={<ProtectedRoute><CasesPage /></ProtectedRoute>} />
+          <Route path="/cases/new" element={<ProtectedRoute><NewCasePage /></ProtectedRoute>} />
+          <Route path="/cases/:caseNumber/edit" element={<ProtectedRoute><EditCasePage /></ProtectedRoute>} />
+          <Route path="/cases/:caseNumber" element={<ProtectedRoute><CaseDetailsPage /></ProtectedRoute>} />
+          <Route path="/case-timeline" element={<ProtectedRoute><CaseTimelinePage /></ProtectedRoute>} />
+          <Route path="/evidence" element={<ProtectedRoute><EvidenceRepositoryPage /></ProtectedRoute>} />
+          <Route path="/evidence/integrity" element={<ProtectedRoute><EvidenceIntegrityPage /></ProtectedRoute>} />
+          <Route path="/evidence/chain-of-custody" element={<ProtectedRoute><ChainOfCustodyPage /></ProtectedRoute>} />
+          <Route path="/evidence/:evidenceCode" element={<ProtectedRoute><EvidenceDetailPage /></ProtectedRoute>} />
+          <Route path="/analysis/digital-footprint" element={<ProtectedRoute><DigitalFootprintPage /></ProtectedRoute>} />
+          <Route path="/analysis/log-analysis" element={<ProtectedRoute><LogAnalysisPage /></ProtectedRoute>} />
+          <Route path="/analysis/event-correlation" element={<ProtectedRoute><EventCorrelationPage /></ProtectedRoute>} />
+          <Route path="/analysis/findings" element={<ProtectedRoute><ForensicFindingsPage /></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
+          <Route path="/investigators" element={<ProtectedRoute><InvestigatorsPage /></ProtectedRoute>} />
+          <Route path="/audit-logs" element={<ProtectedRoute><AuditLogsPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
+from uuid import uuid4
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -37,6 +38,15 @@ class Case(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    sync_uuid: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, unique=True, index=True, default=lambda: str(uuid4())
+    )
+    sync_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     case_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

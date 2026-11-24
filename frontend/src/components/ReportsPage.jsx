@@ -5,7 +5,7 @@ import { SeverityBadge, StatusBadge, formatDate } from "./CaseFormFields.jsx";
 import Icon from "./Icon.jsx";
 import WorkspaceLayout from "./WorkspaceLayout.jsx";
 import { getCases } from "../services/casesApi.js";
-import { getCaseReportJson, getCaseReportPdfUrl } from "../services/forensicsApi.js";
+import { downloadCaseReportPdf, getCaseReportJson } from "../services/forensicsApi.js";
 
 export default function ReportsPage() {
   const navigate = useNavigate();
@@ -14,6 +14,7 @@ export default function ReportsPage() {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -52,6 +53,19 @@ export default function ReportsPage() {
     return () => controller.abort();
   }, [selectedCase]);
 
+  const handleDownloadPdf = async () => {
+    if (!selectedCase) return;
+    setDownloading(true);
+    setError("");
+    try {
+      await downloadCaseReportPdf(selectedCase);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "PDF download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const handleDownloadJson = () => {
     if (!preview) return;
     const blob = new Blob([JSON.stringify(preview, null, 2)], { type: "application/json" });
@@ -76,7 +90,7 @@ export default function ReportsPage() {
         <div>
           <span className="eyebrow"><span className="eyebrow-dot" /> FORENSIC REPORTING</span>
           <h1>Forensic Investigation Reports</h1>
-          <p>Export court-ready PDF dossiers or machine-readable JSON bundles including SHA-256 digests, findings, IOCs, and custody chains.</p>
+          <p>Export court-ready PDF dossiers or JSON bundles distinguishing facts, analytical observations, methodology, and limitations.</p>
         </div>
       </div>
 
@@ -100,13 +114,14 @@ export default function ReportsPage() {
           </label>
           {selectedCase && (
             <div className="case-detail-header-actions">
-              <a
+              <button
                 className="primary-button"
-                href={getCaseReportPdfUrl(selectedCase)}
-                download={`CyberTrace_Report_${selectedCase}.pdf`}
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloading}
               >
-                <Icon name="reports" size={15} /> Download PDF Report
-              </a>
+                <Icon name="reports" size={15} /> {downloading ? "Generating PDF…" : "Download PDF Report"}
+              </button>
               <button className="secondary-button" type="button" onClick={handleDownloadJson} disabled={!preview}>
                 Export JSON Bundle
               </button>
@@ -122,7 +137,10 @@ export default function ReportsPage() {
           <div className="finding-card-header">
             <div>
               <h2>{preview.case.title}</h2>
-              <p>{preview.case.caseNumber} · Last updated {formatDate(preview.case.updatedAt, true)}</p>
+              <p>
+                {preview.organization} · {preview.case.caseNumber} · Prepared by {preview.preparedBy} ·{" "}
+                Updated {formatDate(preview.case.updatedAt, true)}
+              </p>
             </div>
             <div className="finding-badges">
               <SeverityBadge severity={preview.case.severity} />

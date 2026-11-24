@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditLog
+from app.models.auth import CaseNote
 from app.models.case import Case, CaseSeverity, CaseStatus
 from app.schemas.case import CaseCreate, CaseUpdate, to_camel
 
@@ -17,11 +18,14 @@ RESOLVED_CASE_STATUSES = (CaseStatus.RESOLVED, CaseStatus.CLOSED)
 
 def _case_filters(
     *,
-    query: str | None,
-    status_filter: CaseStatus | None,
-    severity_filter: CaseSeverity | None,
+    organization_id: int | None = None,
+    query: str | None = None,
+    status_filter: CaseStatus | None = None,
+    severity_filter: CaseSeverity | None = None,
 ) -> list:
     filters = [Case.is_deleted.is_(False)]
+    if organization_id is not None:
+        filters.append(Case.organization_id == organization_id)
     if status_filter is not None:
         filters.append(Case.status == status_filter)
     if severity_filter is not None:
@@ -41,6 +45,7 @@ def _case_filters(
 def list_cases(
     db: Session,
     *,
+    organization_id: int | None = None,
     query: str | None = None,
     status_filter: CaseStatus | None = None,
     severity_filter: CaseSeverity | None = None,
@@ -48,6 +53,7 @@ def list_cases(
     limit: int = 50,
 ) -> tuple[list[Case], int]:
     filters = _case_filters(
+        organization_id=organization_id,
         query=query,
         status_filter=status_filter,
         severity_filter=severity_filter,
@@ -63,18 +69,25 @@ def list_cases(
     return list(records), total
 
 
-def get_case_by_id(db: Session, case_id: int | str) -> Case | None:
+def get_case_by_id(
+    db: Session,
+    case_id: int | str,
+    *,
+    organization_id: int | None = None,
+) -> Case | None:
+    org_filter = [Case.organization_id == organization_id] if organization_id is not None else []
     if isinstance(case_id, int):
         return db.scalar(
-            select(Case).where(Case.id == case_id, Case.is_deleted.is_(False))
+            select(Case).where(Case.id == case_id, Case.is_deleted.is_(False), *org_filter)
         )
     identifier = case_id.strip()
     if identifier.isdecimal():
-        return get_case_by_id(db, int(identifier))
+        return get_case_by_id(db, int(identifier), organization_id=organization_id)
     return db.scalar(
         select(Case).where(
             Case.case_number == identifier.upper(),
             Case.is_deleted.is_(False),
+            *org_filter,
         )
     )
 
@@ -85,12 +98,13 @@ def _record_mutation(
     *,
     action: str,
     changes: dict,
+    actor: str = SYSTEM_ACTOR,
 ) -> Case:
     db.add(
         AuditLog(
             case_id=case.id,
             action=action,
-            actor=SYSTEM_ACTOR,
+            actor=actor,
             changes_json=changes,
         )
     )
@@ -103,9 +117,18 @@ def _record_mutation(
     return case
 
 
-def create_case(db: Session, data: CaseCreate) -> Case:
+def create_case(
+    db: Session,
+    data: CaseCreate,
+    *,
+    organization_id: int | None = None,
+    actor: str = SYSTEM_ACTOR,
+) -> Case:
     now = datetime.now(timezone.utc)
     case = Case(
+        organization_id=organization_id,
+        sync_uuid=str(uuid4()),
+        sync_version=1,
         case_number=f"CT-{now.year}-{uuid4().hex[:8].upper()}",
         title=data.title,
         description=data.description,
@@ -138,6 +161,7 @@ def create_case(db: Session, data: CaseCreate) -> Case:
             case,
             action="CASE_CREATED",
             changes=changes,
+            actor=actor,
         )
     except SQLAlchemyError:
         db.rollback()
@@ -145,7 +169,13 @@ def create_case(db: Session, data: CaseCreate) -> Case:
     return case
 
 
-def update_case(db: Session, case: Case, data: CaseUpdate) -> Case:
+def update_case(
+    db: Session,
+    case: Case,
+    data: CaseUpdate,
+    *,
+    actor: str = SYSTEM_ACTOR,
+) -> Case:
     changes = {}
     updates = data.model_dump(exclude_unset=True)
     for field, new_value in updates.items():
@@ -163,6 +193,7 @@ def update_case(db: Session, case: Case, data: CaseUpdate) -> Case:
     for field, new_value in updates.items():
         if to_camel(field) in changes:
             setattr(case, field, new_value)
+    case.sync_version = (case.sync_version or 1) + 1
     case.updated_at = datetime.now(timezone.utc)
     try:
         return _record_mutation(
@@ -170,16 +201,18 @@ def update_case(db: Session, case: Case, data: CaseUpdate) -> Case:
             case,
             action="CASE_STATUS_CHANGED" if status_changed else "CASE_UPDATED",
             changes=changes,
+            actor=actor,
         )
     except SQLAlchemyError:
         db.rollback()
         raise
 
 
-def soft_delete_case(db: Session, case: Case) -> Case:
+def soft_delete_case(db: Session, case: Case, *, actor: str = SYSTEM_ACTOR) -> Case:
     if case.is_deleted:
         return case
     case.is_deleted = True
+    case.sync_version = (case.sync_version or 1) + 1
     case.updated_at = datetime.now(timezone.utc)
     try:
         return _record_mutation(
@@ -187,14 +220,17 @@ def soft_delete_case(db: Session, case: Case) -> Case:
             case,
             action="CASE_DELETED",
             changes={"isDeleted": {"old": False, "new": True}},
+            actor=actor,
         )
     except SQLAlchemyError:
         db.rollback()
         raise
 
 
-def get_case_metrics(db: Session) -> dict[str, int]:
-    active_cases = Case.is_deleted.is_(False)
+def get_case_metrics(db: Session, *, organization_id: int | None = None) -> dict[str, int]:
+    filters = [Case.is_deleted.is_(False)]
+    if organization_id is not None:
+        filters.append(Case.organization_id == organization_id)
     row = db.execute(
         select(
             func.count(Case.id).label("total_cases"),
@@ -210,7 +246,7 @@ def get_case_metrics(db: Session) -> dict[str, int]:
                 func.sum(sql_case((Case.status.in_(RESOLVED_CASE_STATUSES), 1), else_=0)),
                 0,
             ).label("resolved_cases"),
-        ).where(active_cases)
+        ).where(*filters)
     ).one()
     return {
         "total_cases": int(row.total_cases),
@@ -218,3 +254,45 @@ def get_case_metrics(db: Session) -> dict[str, int]:
         "critical_cases": int(row.critical_cases),
         "resolved_cases": int(row.resolved_cases),
     }
+
+
+def list_case_notes(db: Session, case_id: int) -> list[CaseNote]:
+    return list(
+        db.scalars(
+            select(CaseNote)
+            .where(CaseNote.case_id == case_id)
+            .order_by(CaseNote.created_at.desc(), CaseNote.id.desc())
+        ).all()
+    )
+
+
+def add_case_note(
+    db: Session,
+    case: Case,
+    *,
+    content: str,
+    author_id: int | None,
+    author_name: str,
+) -> CaseNote:
+    note = CaseNote(
+        case_id=case.id,
+        author_id=author_id,
+        author_name=author_name,
+        content=content.strip(),
+    )
+    try:
+        db.add(note)
+        db.add(
+            AuditLog(
+                case_id=case.id,
+                action="CASE_NOTE_ADDED",
+                actor=author_name,
+                changes_json={"notePreview": {"old": None, "new": content.strip()[:120]}},
+            )
+        )
+        db.commit()
+        db.refresh(note)
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    return note

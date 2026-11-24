@@ -39,6 +39,10 @@ def _format_audit_description(action: str, changes: dict, case_title: str) -> st
         title = (changes.get("findingTitle") or {}).get("new") or "finding"
         new_st = (changes.get("status") or {}).get("new") or "updated"
         return f"Finding '{title}' marked {new_st}."
+    if action == "URL_RESEARCH_COMPLETED":
+        url = (changes.get("targetUrl") or {}).get("new") or "URL"
+        level = (changes.get("riskLevel") or {}).get("new") or "LOW"
+        return f"Digital footprint research completed for {url} (Risk: {level})."
     if action == "CASE_STATUS_CHANGED":
         status_change = changes.get("status")
         if isinstance(status_change, dict):
@@ -52,14 +56,21 @@ def _format_audit_description(action: str, changes: dict, case_title: str) -> st
     return "Case record updated."
 
 
-def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
+def get_dashboard_overview(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    current_user: dict[str, str] | None = None,
+) -> DashboardOverviewResponse:
     now = datetime.now(timezone.utc)
-    active_filter = Case.is_deleted.is_(False)
+    org_filters = [Case.is_deleted.is_(False)]
+    if organization_id is not None:
+        org_filters.append(Case.organization_id == organization_id)
 
     active_count = (
         db.scalar(
             select(func.count(Case.id)).where(
-                active_filter,
+                *org_filters,
                 Case.status.in_(ACTIVE_CASE_STATUSES),
             )
         )
@@ -68,7 +79,7 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
     review_cases_count = (
         db.scalar(
             select(func.count(Case.id)).where(
-                active_filter,
+                *org_filters,
                 Case.status.in_(ACTIVE_CASE_STATUSES),
                 or_(
                     Case.status == CaseStatus.ESCALATED,
@@ -80,30 +91,47 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
     )
     pending_findings_count = (
         db.scalar(
-            select(func.count(ForensicFinding.id)).where(
-                ForensicFinding.status == FindingStatus.REQUIRES_REVIEW
+            select(func.count(ForensicFinding.id))
+            .join(Case, ForensicFinding.case_id == Case.id)
+            .where(
+                *org_filters,
+                ForensicFinding.status == FindingStatus.REQUIRES_REVIEW,
             )
         )
         or 0
     )
-    total_forensic_events = db.scalar(select(func.count(ForensicEvent.id))) or 0
-    total_audit_events = db.scalar(select(func.count(AuditLog.id))) or 0
+    total_forensic_events = (
+        db.scalar(
+            select(func.count(ForensicEvent.id))
+            .join(Case, ForensicEvent.case_id == Case.id)
+            .where(*org_filters)
+        )
+        or 0
+    )
+    total_audit_events = (
+        db.scalar(
+            select(func.count(AuditLog.id))
+            .join(Case, AuditLog.case_id == Case.id)
+            .where(*org_filters)
+        )
+        or 0
+    )
 
     recent_cases = list(
         db.scalars(
             select(Case)
-            .where(active_filter)
+            .where(*org_filters)
             .order_by(Case.updated_at.desc(), Case.id.desc())
             .limit(20)
         ).all()
     )
 
-    # Evidence items & real SHA-256 verification checks
     evidence_items = list(
         db.scalars(
             select(EvidenceItem)
+            .join(Case, EvidenceItem.case_id == Case.id)
             .options(selectinload(EvidenceItem.verifications))
-            .where(EvidenceItem.is_deleted.is_(False))
+            .where(EvidenceItem.is_deleted.is_(False), *org_filters)
             .order_by(EvidenceItem.created_at.desc())
         ).all()
     )
@@ -123,13 +151,14 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
                 )
             )
 
-    # Combined activity events: analytical findings + recent forensic events + case audit logs
     activity_events: list[ActivityEventResponse] = []
 
     recent_findings = list(
         db.scalars(
             select(ForensicFinding)
+            .join(Case, ForensicFinding.case_id == Case.id)
             .options(selectinload(ForensicFinding.case), selectinload(ForensicFinding.evidence))
+            .where(*org_filters)
             .order_by(ForensicFinding.created_at.desc(), ForensicFinding.id.desc())
             .limit(10)
         ).all()
@@ -151,6 +180,7 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
     recent_audit_rows = db.execute(
         select(AuditLog, Case.case_number, Case.title)
         .join(Case, AuditLog.case_id == Case.id)
+        .where(*org_filters)
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
         .limit(15)
     ).all()
@@ -171,14 +201,21 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
     activity_events.sort(key=lambda e: e.occurred_at, reverse=True)
     activity_events = activity_events[:25]
 
-    # 7-day event volume from real forensic events + audit logs
     day_counts: Counter[str] = Counter()
     start_day = (now - timedelta(days=6)).date()
     start_dt = datetime(start_day.year, start_day.month, start_day.day, tzinfo=timezone.utc)
-    for ts in db.scalars(select(AuditLog.created_at).where(AuditLog.created_at >= start_dt)).all():
+    for ts in db.scalars(
+        select(AuditLog.created_at)
+        .join(Case, AuditLog.case_id == Case.id)
+        .where(*org_filters, AuditLog.created_at >= start_dt)
+    ).all():
         if ts is not None:
             day_counts[ts.strftime("%Y-%m-%d")] += 1
-    for ts in db.scalars(select(ForensicEvent.occurred_at).where(ForensicEvent.occurred_at >= start_dt)).all():
+    for ts in db.scalars(
+        select(ForensicEvent.occurred_at)
+        .join(Case, ForensicEvent.case_id == Case.id)
+        .where(*org_filters, ForensicEvent.occurred_at >= start_dt)
+    ).all():
         if ts is not None:
             day_counts[ts.strftime("%Y-%m-%d")] += 1
 
@@ -192,10 +229,10 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
             )
         )
 
-    # Authentication event distribution from parsed forensic events
     auth_rows = db.execute(
         select(ForensicEvent.category, func.count(ForensicEvent.id))
-        .where(ForensicEvent.event_type == "Authentication")
+        .join(Case, ForensicEvent.case_id == Case.id)
+        .where(*org_filters, ForensicEvent.event_type == "Authentication")
         .group_by(ForensicEvent.category)
     ).all()
     auth_distribution = [
@@ -203,7 +240,6 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
         for cat, cnt in sorted(auth_rows, key=lambda row: row[1], reverse=True)
     ]
 
-    # Evidence collection trend (last 6 days with activity or empty if no evidence)
     evidence_trend: list[CountPointResponse] = []
     if evidence_items:
         for offset in range(5, -1, -1):
@@ -215,7 +251,7 @@ def get_dashboard_overview(db: Session) -> DashboardOverviewResponse:
     findings_metric = int(pending_findings_count) if pending_findings_count > 0 else int(review_cases_count)
 
     return DashboardOverviewResponse(
-        current_user=None,
+        current_user=current_user,
         current_case_id=recent_cases[0].case_number if recent_cases else None,
         notifications=[],
         metrics=DashboardMetricsResponse(

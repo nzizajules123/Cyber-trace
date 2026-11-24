@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import get_settings
+from app.core.security import auth_rate_limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -18,6 +19,7 @@ from app.models.evidence import CustodyEvent
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     monkeypatch.setenv("EVIDENCE_VAULT_DIR", str(tmp_path / "vault"))
     get_settings.cache_clear()
+    auth_rate_limiter.reset()
 
     engine = create_engine(
         "sqlite://",
@@ -34,6 +36,18 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
     app.dependency_overrides[get_db] = override_get_db
     app.state.test_session_factory = test_session_factory
     with TestClient(app) as test_client:
+        reg = test_client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "forensics@cybertrace.test",
+                "fullName": "Forensics Lead",
+                "password": "StrongPassword123!",
+                "organizationName": "Forensics Test Org",
+            },
+        )
+        assert reg.status_code == 201, reg.text
+        token = reg.json()["accessToken"]
+        test_client.headers.update({"Authorization": f"Bearer {token}"})
         yield test_client
     app.dependency_overrides.clear()
     del app.state.test_session_factory

@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 import re
@@ -20,13 +19,15 @@ from app.models.evidence import CustodyAction, EvidenceItem, EvidenceStatus
 from app.schemas.analysis import (
     AnalysisRunResponse,
     ExtractedIocItem,
+    FindingCreateRequest,
     FindingReviewUpdate,
     ForensicEventResponse,
     ForensicFindingResponse,
     TimelineEntryResponse,
 )
 from app.services.cases import SYSTEM_ACTOR, get_case_by_id
-from app.services.evidence import append_custody_event
+from app.services.evidence import append_custody_event, get_evidence_by_id
+from app.storage.local import get_evidence_storage
 
 # Regex patterns for IOC extraction
 IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
@@ -529,19 +530,25 @@ def serialize_finding(finding: ForensicFinding) -> ForensicFindingResponse:
     )
 
 
-def analyze_evidence_file(db: Session, evidence: EvidenceItem) -> AnalysisRunResponse:
-    file_path = Path(evidence.stored_path)
-    if not file_path.exists():
+def analyze_evidence_file(
+    db: Session,
+    evidence: EvidenceItem,
+    *,
+    actor: str = SYSTEM_ACTOR,
+) -> AnalysisRunResponse:
+    storage = get_evidence_storage()
+    try:
+        raw_text = storage.read_bytes(evidence.stored_path).decode("utf-8", errors="replace")
+    except (FileNotFoundError, ValueError) as err:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence file is missing from vault storage.",
-        )
+        ) from err
 
-    raw_text = file_path.read_bytes().decode("utf-8", errors="replace")
     detected_format, parsed_events = _parse_evidence_content(evidence.original_filename, raw_text)
     if not parsed_events:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="No parseable log records were found in this evidence file.",
         )
 
@@ -552,7 +559,6 @@ def analyze_evidence_file(db: Session, evidence: EvidenceItem) -> AnalysisRunRes
             ioc_counter[(ioc["type"], ioc["value"])] += 1
 
     try:
-        # Clear previous analysis runs for this specific evidence item so re-running is idempotent
         db.execute(delete(ForensicEvent).where(ForensicEvent.evidence_id == evidence.id))
         db.execute(delete(ForensicFinding).where(ForensicFinding.evidence_id == evidence.id))
 
@@ -568,7 +574,7 @@ def analyze_evidence_file(db: Session, evidence: EvidenceItem) -> AnalysisRunRes
             db,
             evidence,
             action=CustodyAction.ANALYZED,
-            actor=SYSTEM_ACTOR,
+            actor=actor,
             location="CyberTrace Analysis Engine",
             notes=f"Parsed {len(parsed_events)} events ({detected_format}), extracted {len(ioc_counter)} unique IOCs, generated {len(new_findings)} findings.",
         )
@@ -576,7 +582,7 @@ def analyze_evidence_file(db: Session, evidence: EvidenceItem) -> AnalysisRunRes
             AuditLog(
                 case_id=evidence.case_id,
                 action="EVIDENCE_ANALYZED",
-                actor=SYSTEM_ACTOR,
+                actor=actor,
                 changes_json={
                     "evidenceCode": {"old": None, "new": evidence.evidence_code},
                     "eventsParsed": {"old": None, "new": len(parsed_events)},
@@ -616,18 +622,23 @@ def analyze_evidence_file(db: Session, evidence: EvidenceItem) -> AnalysisRunRes
 def list_forensic_events(
     db: Session,
     *,
+    organization_id: int | None = None,
     case_ref: str | None = None,
     evidence_id: int | None = None,
     event_type: str | None = None,
     query: str | None = None,
     limit: int = 200,
 ) -> list[ForensicEvent]:
-    stmt = select(ForensicEvent).options(
-        selectinload(ForensicEvent.case),
-        selectinload(ForensicEvent.evidence),
+    stmt = (
+        select(ForensicEvent)
+        .join(Case, ForensicEvent.case_id == Case.id)
+        .options(selectinload(ForensicEvent.case), selectinload(ForensicEvent.evidence))
+        .where(Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        stmt = stmt.where(Case.organization_id == organization_id)
     if case_ref:
-        case = get_case_by_id(db, case_ref)
+        case = get_case_by_id(db, case_ref, organization_id=organization_id)
         if case is None:
             return []
         stmt = stmt.where(ForensicEvent.case_id == case.id)
@@ -654,16 +665,21 @@ def list_forensic_events(
 def list_findings(
     db: Session,
     *,
+    organization_id: int | None = None,
     case_ref: str | None = None,
     status_filter: FindingStatus | None = None,
     severity_filter: CaseSeverity | None = None,
 ) -> list[ForensicFinding]:
-    stmt = select(ForensicFinding).options(
-        selectinload(ForensicFinding.case),
-        selectinload(ForensicFinding.evidence),
+    stmt = (
+        select(ForensicFinding)
+        .join(Case, ForensicFinding.case_id == Case.id)
+        .options(selectinload(ForensicFinding.case), selectinload(ForensicFinding.evidence))
+        .where(Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        stmt = stmt.where(Case.organization_id == organization_id)
     if case_ref:
-        case = get_case_by_id(db, case_ref)
+        case = get_case_by_id(db, case_ref, organization_id=organization_id)
         if case is None:
             return []
         stmt = stmt.where(ForensicFinding.case_id == case.id)
@@ -678,10 +694,68 @@ def list_findings(
     )
 
 
+def create_manual_finding(
+    db: Session,
+    data: FindingCreateRequest,
+    *,
+    organization_id: int,
+    actor: str = SYSTEM_ACTOR,
+) -> ForensicFinding:
+    case = get_case_by_id(db, data.case_id, organization_id=organization_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Linked case not found.")
+    evidence = None
+    if data.evidence_id:
+        evidence = get_evidence_by_id(db, data.evidence_id, organization_id=organization_id)
+        if evidence is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Linked evidence item not found.")
+
+    now = datetime.now(timezone.utc)
+    finding = ForensicFinding(
+        case_id=case.id,
+        evidence_id=evidence.id if evidence else None,
+        rule_id="INVESTIGATOR_MANUAL",
+        title=data.title.strip(),
+        severity=data.severity,
+        confidence=data.confidence,
+        status=FindingStatus.REQUIRES_REVIEW,
+        summary=data.summary.strip(),
+        indicators_json=[{"type": "Evidence", "value": evidence.evidence_code}] if evidence else [],
+        event_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        reviewer_notes=data.reviewer_notes,
+    )
+    try:
+        db.add(finding)
+        db.add(
+            AuditLog(
+                case_id=case.id,
+                action="FINDING_CREATED",
+                actor=actor,
+                changes_json={"findingTitle": {"old": None, "new": finding.title}},
+            )
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+    loaded = db.scalar(
+        select(ForensicFinding)
+        .options(selectinload(ForensicFinding.case), selectinload(ForensicFinding.evidence))
+        .where(ForensicFinding.id == finding.id)
+    )
+    assert loaded is not None
+    return loaded
+
+
 def review_finding(
     db: Session,
     finding: ForensicFinding,
     data: FindingReviewUpdate,
+    *,
+    actor: str = SYSTEM_ACTOR,
 ) -> ForensicFinding:
     old_status = finding.status.value
     finding.status = data.status
@@ -692,7 +766,7 @@ def review_finding(
             AuditLog(
                 case_id=finding.case_id,
                 action="FINDING_REVIEWED",
-                actor=SYSTEM_ACTOR,
+                actor=actor,
                 changes_json={
                     "findingTitle": {"old": None, "new": finding.title},
                     "status": {"old": old_status, "new": data.status.value},
@@ -707,8 +781,13 @@ def review_finding(
     return finding
 
 
-def aggregate_iocs(db: Session, *, case_ref: str | None = None) -> list[ExtractedIocItem]:
-    events = list_forensic_events(db, case_ref=case_ref, limit=2000)
+def aggregate_iocs(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    case_ref: str | None = None,
+) -> list[ExtractedIocItem]:
+    events = list_forensic_events(db, organization_id=organization_id, case_ref=case_ref, limit=2000)
     counter: Counter[tuple[str, str]] = Counter()
     for ev in events:
         for item in ev.extracted_iocs_json or []:
@@ -723,18 +802,23 @@ def aggregate_iocs(db: Session, *, case_ref: str | None = None) -> list[Extracte
 def build_unified_timeline(
     db: Session,
     *,
+    organization_id: int | None = None,
     case_ref: str | None = None,
     limit: int = 150,
 ) -> list[TimelineEntryResponse]:
     entries: list[TimelineEntryResponse] = []
-    target_case = get_case_by_id(db, case_ref) if case_ref else None
+    target_case = get_case_by_id(db, case_ref, organization_id=organization_id) if case_ref else None
     if case_ref and target_case is None:
         return []
 
-    # 1. Forensic events (Recorded facts)
-    ev_stmt = select(ForensicEvent).options(
-        selectinload(ForensicEvent.case), selectinload(ForensicEvent.evidence)
+    ev_stmt = (
+        select(ForensicEvent)
+        .join(Case, ForensicEvent.case_id == Case.id)
+        .options(selectinload(ForensicEvent.case), selectinload(ForensicEvent.evidence))
+        .where(Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        ev_stmt = ev_stmt.where(Case.organization_id == organization_id)
     if target_case:
         ev_stmt = ev_stmt.where(ForensicEvent.case_id == target_case.id)
     for ev in db.scalars(ev_stmt.order_by(ForensicEvent.occurred_at.desc()).limit(limit)).all():
@@ -753,10 +837,14 @@ def build_unified_timeline(
             )
         )
 
-    # 2. Analytical findings
-    find_stmt = select(ForensicFinding).options(
-        selectinload(ForensicFinding.case), selectinload(ForensicFinding.evidence)
+    find_stmt = (
+        select(ForensicFinding)
+        .join(Case, ForensicFinding.case_id == Case.id)
+        .options(selectinload(ForensicFinding.case), selectinload(ForensicFinding.evidence))
+        .where(Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        find_stmt = find_stmt.where(Case.organization_id == organization_id)
     if target_case:
         find_stmt = find_stmt.where(ForensicFinding.case_id == target_case.id)
     for finding in db.scalars(find_stmt.order_by(ForensicFinding.created_at.desc()).limit(limit)).all():
@@ -776,8 +864,13 @@ def build_unified_timeline(
             )
         )
 
-    # 3. Case audit logs
-    audit_stmt = select(AuditLog, Case.case_number).join(Case, AuditLog.case_id == Case.id)
+    audit_stmt = (
+        select(AuditLog, Case.case_number)
+        .join(Case, AuditLog.case_id == Case.id)
+        .where(Case.is_deleted.is_(False))
+    )
+    if organization_id is not None:
+        audit_stmt = audit_stmt.where(Case.organization_id == organization_id)
     if target_case:
         audit_stmt = audit_stmt.where(AuditLog.case_id == target_case.id)
     for audit, cnum in db.execute(audit_stmt.order_by(AuditLog.created_at.desc()).limit(limit)).all():

@@ -14,11 +14,18 @@ from app.services.evidence import list_evidence, serialize_evidence_item, verify
 from app.services.log_analyzer import aggregate_iocs, list_findings, list_forensic_events, serialize_finding
 
 
-def build_case_report_payload(db: Session, case: Case) -> dict[str, Any]:
-    evidence_items = list_evidence(db, case_ref=case.case_number)
-    findings = list_findings(db, case_ref=case.case_number)
-    events = list_forensic_events(db, case_ref=case.case_number, limit=500)
-    iocs = aggregate_iocs(db, case_ref=case.case_number)
+def build_case_report_payload(
+    db: Session,
+    case: Case,
+    *,
+    organization_id: int | None = None,
+    organization_name: str = "CyberTrace Workspace",
+    prepared_by: str = "system",
+) -> dict[str, Any]:
+    evidence_items = list_evidence(db, organization_id=organization_id, case_ref=case.case_number)
+    findings = list_findings(db, organization_id=organization_id, case_ref=case.case_number)
+    events = list_forensic_events(db, organization_id=organization_id, case_ref=case.case_number, limit=500)
+    iocs = aggregate_iocs(db, organization_id=organization_id, case_ref=case.case_number)
 
     custody_records = []
     all_chains_valid = True
@@ -42,6 +49,16 @@ def build_case_report_payload(db: Session, case: Case) -> dict[str, Any]:
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "platform": "CyberTrace Digital Forensics Platform",
+        "organization": organization_name,
+        "preparedBy": prepared_by,
+        "methodology": (
+            "Original evidence files are stored untouched and verified using SHA-256 cryptographic digests. "
+            "Recorded facts extracted from source artifacts are kept strictly separate from automated analytical findings."
+        ),
+        "limitations": (
+            "Findings reflect only the evidence items ingested into this case. Automated detections require "
+            "investigator validation and do not independently establish legal attribution or guilt."
+        ),
         "case": {
             "caseNumber": case.case_number,
             "title": case.title,
@@ -76,8 +93,21 @@ def build_case_report_payload(db: Session, case: Case) -> dict[str, Any]:
     }
 
 
-def generate_case_pdf_report(db: Session, case: Case) -> bytes:
-    payload = build_case_report_payload(db, case)
+def generate_case_pdf_report(
+    db: Session,
+    case: Case,
+    *,
+    organization_id: int | None = None,
+    organization_name: str = "CyberTrace Workspace",
+    prepared_by: str = "system",
+) -> bytes:
+    payload = build_case_report_payload(
+        db,
+        case,
+        organization_id=organization_id,
+        organization_name=organization_name,
+        prepared_by=prepared_by,
+    )
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -284,6 +314,21 @@ def generate_case_pdf_report(db: Session, case: Case) -> bytes:
             )
         )
         story.append(c_table)
+
+    # Methodology, Limitations & Conclusions
+    story.append(Paragraph("6. Methodology, Limitations & Investigator Conclusions", h2_style))
+    story.append(Paragraph(f"<b>Organization:</b> {payload['organization']} &nbsp;|&nbsp; <b>Prepared by:</b> {payload['preparedBy']}", body_style))
+    story.append(Paragraph(f"<b>Methodology:</b> {payload['methodology']}", body_style))
+    story.append(Paragraph(f"<b>Limitations:</b> {payload['limitations']}", body_style))
+    confirmed_count = sum(1 for f in payload["findings"] if f.get("status") == "CONFIRMED")
+    pending_count = sum(1 for f in payload["findings"] if f.get("status") == "REQUIRES_REVIEW")
+    story.append(
+        Paragraph(
+            f"<b>Conclusions Summary:</b> {confirmed_count} finding(s) confirmed by investigator review; "
+            f"{pending_count} finding(s) remain pending review. Final conclusions remain the sole responsibility of the assigned investigator.",
+            body_style,
+        )
+    )
 
     doc.build(story)
     return buffer.getvalue()

@@ -10,7 +10,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import get_settings
 from app.models.audit import AuditLog
 from app.models.case import Case
 from app.models.evidence import (
@@ -31,15 +30,14 @@ from app.schemas.evidence import (
     IntegritySummaryResponse,
 )
 from app.services.cases import SYSTEM_ACTOR, get_case_by_id
+from app.storage.local import get_evidence_storage
 
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_EVIDENCE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
 def _vault_root() -> Path:
-    root = Path(get_settings().evidence_vault_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return get_evidence_storage().root
 
 
 def _sanitize_filename(name: str) -> str:
@@ -228,16 +226,24 @@ def serialize_evidence_detail(evidence: EvidenceItem) -> EvidenceDetailResponse:
     )
 
 
-def get_evidence_by_id(db: Session, evidence_id: int | str) -> EvidenceItem | None:
+def get_evidence_by_id(
+    db: Session,
+    evidence_id: int | str,
+    *,
+    organization_id: int | None = None,
+) -> EvidenceItem | None:
     stmt = (
         select(EvidenceItem)
+        .join(Case, EvidenceItem.case_id == Case.id)
         .options(
             selectinload(EvidenceItem.case),
             selectinload(EvidenceItem.verifications),
             selectinload(EvidenceItem.custody_events),
         )
-        .where(EvidenceItem.is_deleted.is_(False))
+        .where(EvidenceItem.is_deleted.is_(False), Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        stmt = stmt.where(Case.organization_id == organization_id)
     if isinstance(evidence_id, int):
         return db.scalar(stmt.where(EvidenceItem.id == evidence_id))
     identifier = evidence_id.strip()
@@ -251,21 +257,23 @@ async def ingest_evidence_file(
     *,
     case_ref: str,
     upload: UploadFile,
+    organization_id: int | None = None,
     evidence_type: EvidenceType = EvidenceType.LOG_FILE,
     acquisition_source: str | None = None,
     collected_by: str | None = None,
     description: str | None = None,
+    actor: str = SYSTEM_ACTOR,
 ) -> EvidenceItem:
-    case = get_case_by_id(db, case_ref)
+    case = get_case_by_id(db, case_ref, organization_id=organization_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Linked case not found.")
 
     raw_bytes = await upload.read()
     if len(raw_bytes) == 0:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Uploaded evidence file is empty.")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Uploaded evidence file is empty.")
     if len(raw_bytes) > MAX_EVIDENCE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Evidence file exceeds the 50 MB limit.",
         )
 
@@ -276,17 +284,15 @@ async def ingest_evidence_file(
     now = datetime.now(timezone.utc)
     evidence_code = f"EV-{now.year}-{uuid4().hex[:8].upper()}"
     safe_name = _sanitize_filename(upload.filename or "evidence.bin")
-    case_dir = _vault_root() / case.case_number
-    case_dir.mkdir(parents=True, exist_ok=True)
-    target_path = case_dir / f"{evidence_code}_{safe_name}"
-    target_path.write_bytes(raw_bytes)
+    storage = get_evidence_storage()
+    stored_path = storage.save_bytes(f"{case.case_number}/{evidence_code}_{safe_name}", raw_bytes)
 
-    actor = (collected_by or "").strip() or SYSTEM_ACTOR
+    collector = (collected_by or "").strip() or actor
     evidence = EvidenceItem(
         evidence_code=evidence_code,
         case_id=case.id,
         original_filename=upload.filename or safe_name,
-        stored_path=str(target_path),
+        stored_path=stored_path,
         mime_type=upload.content_type or "application/octet-stream",
         file_size=len(raw_bytes),
         sha256=sha256_hex,
@@ -295,7 +301,7 @@ async def ingest_evidence_file(
         evidence_type=evidence_type,
         status=EvidenceStatus.INGESTED,
         acquisition_source=(acquisition_source or "").strip() or None,
-        collected_by=actor,
+        collected_by=collector,
         description=(description or "").strip() or None,
         is_deleted=False,
         created_at=now,
@@ -305,7 +311,6 @@ async def ingest_evidence_file(
         db.add(evidence)
         db.flush()
 
-        # Record initial acquisition verification check
         db.add(
             EvidenceVerification(
                 evidence_id=evidence.id,
@@ -314,24 +319,22 @@ async def ingest_evidence_file(
                 computed_hash=sha256_hex,
                 comparison_performed=True,
                 sha256_matches=True,
-                verified_by=actor,
+                verified_by=collector,
                 notes="Initial cryptographic acquisition digest computed and sealed in vault.",
                 verified_at=now,
             )
         )
 
-        # Genesis tamper-evident custody event
         append_custody_event(
             db,
             evidence,
             action=CustodyAction.COLLECTED,
-            actor=actor,
-            to_custodian=actor,
+            actor=collector,
+            to_custodian=collector,
             location=evidence.acquisition_source or "CyberTrace Evidence Vault",
             notes=f"Ingested {evidence.original_filename} ({evidence.file_size} bytes, SHA-256: {sha256_hex[:16]}…).",
         )
 
-        # Link to case audit trail
         db.add(
             AuditLog(
                 case_id=case.id,
@@ -347,11 +350,10 @@ async def ingest_evidence_file(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        if target_path.exists():
-            target_path.unlink(missing_ok=True)
+        storage.delete(stored_path)
         raise
 
-    loaded = get_evidence_by_id(db, evidence.id)
+    loaded = get_evidence_by_id(db, evidence.id, organization_id=organization_id)
     assert loaded is not None
     return loaded
 
@@ -359,21 +361,25 @@ async def ingest_evidence_file(
 def list_evidence(
     db: Session,
     *,
+    organization_id: int | None = None,
     case_ref: str | None = None,
     evidence_type: EvidenceType | None = None,
     query: str | None = None,
 ) -> list[EvidenceItem]:
     stmt = (
         select(EvidenceItem)
+        .join(Case, EvidenceItem.case_id == Case.id)
         .options(
             selectinload(EvidenceItem.case),
             selectinload(EvidenceItem.verifications),
             selectinload(EvidenceItem.custody_events),
         )
-        .where(EvidenceItem.is_deleted.is_(False))
+        .where(EvidenceItem.is_deleted.is_(False), Case.is_deleted.is_(False))
     )
+    if organization_id is not None:
+        stmt = stmt.where(Case.organization_id == organization_id)
     if case_ref:
-        case = get_case_by_id(db, case_ref)
+        case = get_case_by_id(db, case_ref, organization_id=organization_id)
         if case is None:
             return []
         stmt = stmt.where(EvidenceItem.case_id == case.id)
@@ -398,25 +404,22 @@ def verify_evidence_integrity(
     verified_by: str | None = None,
 ) -> EvidenceVerification:
     actor = (verified_by or "").strip() or SYSTEM_ACTOR
-    file_path = Path(evidence.stored_path)
+    storage = get_evidence_storage()
     now = datetime.now(timezone.utc)
 
-    if not file_path.exists() or not file_path.is_file():
-        computed_hash = None
-        matches = False
-        notes = "Evidence file is missing from vault storage — integrity check failed."
-    else:
-        hasher = hashlib.sha256()
-        with file_path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(65536), b""):
-                hasher.update(chunk)
-        computed_hash = hasher.hexdigest()
+    try:
+        raw_bytes = storage.read_bytes(evidence.stored_path)
+        computed_hash: str | None = hashlib.sha256(raw_bytes).hexdigest()
         matches = computed_hash == evidence.sha256
         notes = (
             "SHA-256 digest matches original acquisition hash."
             if matches
             else f"HASH MISMATCH DETECTED! Expected {evidence.sha256[:16]}…, got {computed_hash[:16]}…."
         )
+    except (FileNotFoundError, ValueError):
+        computed_hash = None
+        matches = False
+        notes = "Evidence file is missing or inaccessible in vault storage — integrity check failed."
 
     verification = EvidenceVerification(
         evidence_id=evidence.id,
@@ -474,8 +477,8 @@ def record_custody_transfer(
     return event
 
 
-def get_integrity_summary(db: Session) -> IntegritySummaryResponse:
-    items = list_evidence(db)
+def get_integrity_summary(db: Session, *, organization_id: int | None = None) -> IntegritySummaryResponse:
+    items = list_evidence(db, organization_id=organization_id)
     serialized = [serialize_evidence_item(item) for item in items]
     verified = 0
     mismatched = 0
@@ -498,10 +501,15 @@ def get_integrity_summary(db: Session) -> IntegritySummaryResponse:
     )
 
 
-def get_custody_ledger(db: Session, *, evidence_ref: str | None = None) -> CustodyLedgerResponse:
-    items = list_evidence(db)
+def get_custody_ledger(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    evidence_ref: str | None = None,
+) -> CustodyLedgerResponse:
+    items = list_evidence(db, organization_id=organization_id)
     if evidence_ref:
-        target = get_evidence_by_id(db, evidence_ref)
+        target = get_evidence_by_id(db, evidence_ref, organization_id=organization_id)
         items = [target] if target else []
 
     broken_codes: list[str] = []

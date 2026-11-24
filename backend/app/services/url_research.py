@@ -104,13 +104,13 @@ def normalize_and_validate_url(raw_url: str) -> tuple[str, str, int | None]:
     parsed = urlparse(candidate)
     if parsed.scheme.lower() not in ("http", "https"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Only http:// and https:// URLs are supported for forensic research.",
         )
     hostname = (parsed.hostname or "").strip().lower()
     if not hostname or "." not in hostname and hostname != "localhost":
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Please provide a valid public website domain or URL.",
         )
     return candidate, hostname, parsed.port
@@ -134,14 +134,14 @@ def _is_forbidden_ip(ip_str: str) -> bool:
 def resolve_and_guard_dns(hostname: str) -> dict[str, Any]:
     if hostname in ("localhost", "127.0.0.1", "::1") or hostname.endswith(".local"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Private or loopback hosts cannot be researched (SSRF protection).",
         )
     try:
         infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror as err:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"DNS resolution failed for '{hostname}': {err}",
         ) from err
 
@@ -151,7 +151,7 @@ def resolve_and_guard_dns(hostname: str) -> dict[str, Any]:
         ip_str = sockaddr[0]
         if _is_forbidden_ip(ip_str):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Blocked target '{hostname}': resolves to a non-public/internal IP address ({ip_str}).",
             )
         if family == socket.AF_INET and ip_str not in ipv4s:
@@ -453,8 +453,14 @@ def serialize_url_investigation(record: UrlInvestigation) -> UrlInvestigationRes
     )
 
 
-def run_url_research(db: Session, request: UrlResearchRequest) -> UrlInvestigationResponse:
-    case = get_case_by_id(db, request.case_id)
+def run_url_research(
+    db: Session,
+    request: UrlResearchRequest,
+    *,
+    organization_id: int | None = None,
+    actor: str = SYSTEM_ACTOR,
+) -> UrlInvestigationResponse:
+    case = get_case_by_id(db, request.case_id, organization_id=organization_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Linked case not found.")
 
@@ -522,7 +528,8 @@ def run_url_research(db: Session, request: UrlResearchRequest) -> UrlInvestigati
 
     now = datetime.now(timezone.utc)
     inv_code = f"FP-{now.year}-{uuid4().hex[:8].upper()}"
-    actor = (request.submitted_by or "").strip() or case.reporter_name or SYSTEM_ACTOR
+    submitter = (request.submitted_by or "").strip() or actor or case.reporter_name or SYSTEM_ACTOR
+    actor = submitter
 
     http_info = {
         "statusCode": http_result["statusCode"],
@@ -670,10 +677,24 @@ def run_url_research(db: Session, request: UrlResearchRequest) -> UrlInvestigati
     return serialize_url_investigation(loaded)
 
 
-def list_url_investigations(db: Session, *, case_ref: str | None = None) -> list[UrlInvestigationResponse]:
-    stmt = select(UrlInvestigation).options(selectinload(UrlInvestigation.case))
+def list_url_investigations(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    case_ref: str | None = None,
+) -> list[UrlInvestigationResponse]:
+    from app.models.case import Case
+
+    stmt = (
+        select(UrlInvestigation)
+        .join(Case, UrlInvestigation.case_id == Case.id)
+        .options(selectinload(UrlInvestigation.case))
+        .where(Case.is_deleted.is_(False))
+    )
+    if organization_id is not None:
+        stmt = stmt.where(Case.organization_id == organization_id)
     if case_ref:
-        case = get_case_by_id(db, case_ref)
+        case = get_case_by_id(db, case_ref, organization_id=organization_id)
         if case is None:
             return []
         stmt = stmt.where(UrlInvestigation.case_id == case.id)

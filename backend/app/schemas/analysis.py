@@ -65,9 +65,24 @@ class ForensicFindingResponse(StrictSchema):
     )
 
 
+class FindingCreateRequest(StrictSchema):
+    case_id: str = Field(min_length=1, max_length=64)
+    evidence_id: str | None = Field(default=None, max_length=64)
+    title: str = Field(min_length=3, max_length=200)
+    severity: CaseSeverity = Field(default=CaseSeverity.MEDIUM, strict=False)
+    confidence: FindingConfidence = Field(default=FindingConfidence.MEDIUM, strict=False)
+    summary: str = Field(min_length=5, max_length=5000)
+    reviewer_notes: str | None = Field(default=None, max_length=4000)
+
+
 class FindingReviewUpdate(StrictSchema):
     status: FindingStatus = Field(strict=False)
     reviewer_notes: str | None = Field(default=None, max_length=4000)
+
+
+class AiAssistRequest(StrictSchema):
+    case_id: str = Field(min_length=1, max_length=64)
+    question: str | None = Field(default=None, max_length=1000)
 
 
 class AnalysisRunResponse(StrictSchema):

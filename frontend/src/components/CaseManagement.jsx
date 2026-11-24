@@ -15,13 +15,16 @@ import {
 import Icon from "./Icon.jsx";
 import WorkspaceLayout from "./WorkspaceLayout.jsx";
 import {
+  addCaseNote,
   createCase,
   deleteCase,
   getCase,
   getCaseMetrics,
+  getCaseNotes,
   getCases,
   updateCase,
 } from "../services/casesApi.js";
+import { askAiAssistant } from "../services/forensicsApi.js";
 
 function PageError({ message, onRetry }) {
   return (
@@ -566,6 +569,12 @@ function CaseDetailPage() {
   const [savingStatus, setSavingStatus] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [notes, setNotes] = useState([]);
+  const [noteInput, setNoteInput] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiResult, setAiResult] = useState(null);
+  const [loadingAi, setLoadingAi] = useState(false);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -573,10 +582,14 @@ function CaseDetailPage() {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    getCase(caseNumber, { signal: controller.signal })
-      .then((item) => {
+    Promise.all([
+      getCase(caseNumber, { signal: controller.signal }),
+      getCaseNotes(caseNumber, { signal: controller.signal }).catch(() => []),
+    ])
+      .then(([item, caseNotes]) => {
         setRecord(item);
         setStatus(item.status);
+        setNotes(Array.isArray(caseNotes) ? caseNotes : []);
       })
       .catch((cause) => {
         if (!controller.signal.aborted) {
@@ -588,6 +601,36 @@ function CaseDetailPage() {
       });
     return () => controller.abort();
   }, [caseNumber, reloadKey]);
+
+  const handleAddNote = async (event) => {
+    event.preventDefault();
+    if (!noteInput.trim()) return;
+    setSavingNote(true);
+    setError("");
+    try {
+      const created = await addCaseNote(record.caseNumber, noteInput.trim());
+      setNotes((prev) => [created, ...prev]);
+      setNoteInput("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Failed to save case note.");
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleAskAi = async (event) => {
+    event.preventDefault();
+    setLoadingAi(true);
+    setError("");
+    try {
+      const res = await askAiAssistant({ caseId: record.caseNumber, question: aiQuestion.trim() });
+      setAiResult(res);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "AI assistant unavailable.");
+    } finally {
+      setLoadingAi(false);
+    }
+  };
 
   const saveStatus = async (event) => {
     event.preventDefault();
@@ -766,6 +809,68 @@ function CaseDetailPage() {
               <Link className="case-back-link" to="/cases">
                 Back to all cases
               </Link>
+            </section>
+            <section className="panel case-detail-panel case-audit-panel">
+              <h2>Investigator Case Notes ({notes.length})</h2>
+              <form className="case-form" onSubmit={handleAddNote} style={{ marginBottom: "14px" }}>
+                <label>
+                  <span>Add investigation note</span>
+                  <textarea
+                    value={noteInput}
+                    onChange={(e) => setNoteInput(e.target.value)}
+                    rows={2}
+                    placeholder="Document observations, hypotheses, or investigative steps…"
+                  />
+                </label>
+                <button className="secondary-button" type="submit" disabled={savingNote || !noteInput.trim()}>
+                  {savingNote ? "Saving note…" : "Save note"}
+                </button>
+              </form>
+              {notes.length > 0 && (
+                <ol className="case-audit-timeline">
+                  {notes.map((n) => (
+                    <li key={n.id}>
+                      <span className="case-audit-marker" />
+                      <div>
+                        <strong>{n.authorName}</strong>
+                        <p>{n.content}</p>
+                        <time dateTime={n.createdAt}>{formatDate(n.createdAt, true)}</time>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+            <section className="panel case-detail-panel case-audit-panel">
+              <h2>AI Investigation Assistant (Evidence-Backed)</h2>
+              <p>Generates grounded case summaries, identifies missing evidence, and suggests follow-up questions using only authorized records.</p>
+              <form className="finding-review-bar" style={{ borderTop: "none", paddingTop: 0 }} onSubmit={handleAskAi}>
+                <input
+                  value={aiQuestion}
+                  onChange={(e) => setAiQuestion(e.target.value)}
+                  placeholder="Optional question (e.g. What evidence gaps remain?)"
+                />
+                <button className="primary-button" type="submit" disabled={loadingAi}>
+                  {loadingAi ? "Synthesizing…" : "Generate AI Brief"}
+                </button>
+              </form>
+              {aiResult && (
+                <div className="ai-brief-box">
+                  <div className="ai-disclaimer">{aiResult.disclaimer}</div>
+                  <p>{aiResult.summary}</p>
+                  {aiResult.missingEvidenceOrGaps?.length > 0 && (
+                    <div>
+                      <strong>Evidence Gaps &amp; Next Steps:</strong>
+                      <ul>
+                        {aiResult.missingEvidenceOrGaps.map((g, idx) => <li key={idx}>{g}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="forensic-submeta">
+                    Citations: {aiResult.citations.join(", ")} · Mode: {aiResult.mode} · External data transmitted: {aiResult.externalDataTransmitted ? "Yes" : "No"}
+                  </div>
+                </div>
+              )}
             </section>
             <section className="panel case-detail-panel case-audit-panel">
               <h2>Case activity</h2>

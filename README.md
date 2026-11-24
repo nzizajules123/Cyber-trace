@@ -1,103 +1,37 @@
 # CyberTrace
 
-CyberTrace is a defensive digital forensics and cyber investigation platform.
-The frontend includes an investigation dashboard. The dashboard uses clearly
-labeled demonstration records unless an API base URL is configured.
+CyberTrace is a defensive digital forensics and cyber investigation platform designed for **CyberTrace Local** (private forensic laboratories) and **CyberTrace Cloud** (multi-organization deployments).
 
-## Project layout
+## Key Capabilities
+* **Authentication, Organizations & RBAC**: Argon2id password hashing, DB-backed revocable sessions, RFC 6238 TOTP MFA, password recovery, organization isolation, and 6 backend-enforced roles (`SYSTEM_ADMIN`, `ORG_ADMIN`, `LEAD_INVESTIGATOR`, `INVESTIGATOR`, `EVIDENCE_ANALYST`, `READ_ONLY_AUDITOR`).
+* **Case Management**: Full lifecycle CRUD, search/filter/pagination, investigator notes, soft-delete archival, camelCase audit diffs, and live metrics.
+* **Evidence Vault & Chain of Custody**: Pluggable `EvidenceStorage` abstraction with path-traversal protection, automatic SHA-256/SHA-512/MD5 hashing, on-disk SHA-256 verification, audited `nosniff` downloads, and hash-chained tamper-evident Chain of Custody.
+* **Digital Footprint (URL Research)**: SSRF-guarded website research inspecting DNS, TLS certificates, redirect chains, HTTP security headers, HTML forms/phishing indicators, IOCs, and optional Evidence Vault sealing.
+* **Log Analysis, Event Correlation & Findings**: Multi-format parser (JSON/JSONL, CSV, Syslog/SSH, Apache/Nginx), IOC extraction, automated detection rules, cross-artifact correlation, unified timeline, and manual/automated finding triage.
+* **Evidence-Backed AI Assistant & PDF Reports**: Local-first AI case synthesis (never transmits external data by default, cites real records) and court-ready ReportLab PDF & JSON dossiers.
 
-- `backend/app/api`: FastAPI routing and versioned API entry points.
-- `backend/app/core`: application configuration and shared infrastructure.
-- `backend/app/db`: SQLAlchemy base and database session utilities.
-- `backend/migrations`: Alembic schema migrations.
-- `backend/app/models`: database model package.
-- `backend/app/schemas`: Pydantic schema package.
-- `backend/app/services`: business logic package.
-- `backend/tests`: backend tests.
-- `frontend/src`: React application, shared styles, and components.
-- `frontend/src/data/demoDashboard.js`: isolated illustrative dashboard data.
-- `frontend/src/services/dashboardApi.js`: API loading and response validation.
-- `frontend/src/components/CaseManagement.jsx`: case list, details, and forms.
-- `frontend/src/services/casesApi.js`: live Case API requests; no demo fallback.
+## Quick Start (Local)
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full setup instructions (SQLite quick-start and Docker/MySQL 8.4).
 
-## Development setup
+```powershell
+# Backend
+cd backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
-1. Copy `.env.example` to the root `.env` and `backend/.env`. These are
-   local-development credentials; change them before using sensitive data.
-2. Start MySQL 8 and wait for its health check:
+# Frontend (new terminal)
+cd frontend
+npm install
+npm run dev
+```
 
-   ```powershell
-   docker compose up -d --wait mysql
-   ```
-
-3. Install dependencies, apply migrations, and start the backend:
-
-   ```powershell
-   cd backend
-   python -m pip install -e ".[dev]"
-   python -m alembic upgrade head
-   python -m uvicorn app.main:app --reload
-   ```
-
-4. In another terminal, install and start the frontend:
-
-   ```powershell
-   cd frontend
-   npm install
-   npm run dev
-   ```
-
-In addition to FastAPI's built-in documentation endpoints, the backend now
-exposes the Cases API. Database access is lazy: the API can start without a
-configured database, but case requests return an explicit service-unavailable
-error until `DATABASE_URL` is configured and the migration has been applied.
-
-## Case management
-
-The Cases page uses live API data only; it never falls back to dashboard demo
-records. The development Vite server proxies `/api` to `http://127.0.0.1:8000`.
-For a deployed frontend, route `/api` to the backend on the same origin.
-
-Available endpoints:
-
-- `GET /health` — backend liveness.
-- `GET /health/ready` — checks database readiness.
-- `POST /api/v1/cases` — create a case.
-- `GET /api/v1/cases` — list/search/filter cases with `q`, `status`, `severity`,
-  `page`, and `size` (legacy `skip`/`limit` are also accepted).
-- `GET /api/v1/cases/metrics` — total, open, critical, and resolved counts.
-- `GET /api/v1/cases/{id}` — read case details and audit history. The path also
-  accepts the generated case number.
-- `PATCH /api/v1/cases/{id}` — edit case information and/or status.
-- `DELETE /api/v1/cases/{id}` — soft-delete a case while retaining its audit history.
-
-Case numbers are generated in the form `CT-YYYY-XXXXXXXX`. Existing records
-are migrated to `CT-YYYY-NNNN`, and their previous assigned-investigator value
-is retained as `assignedTo`. The audit actor is currently `system` because
-authentication and investigator accounts are not implemented. Do not expose
-this development API to untrusted networks until authentication and
-authorization are implemented.
-
-To verify a running backend, check `http://127.0.0.1:8000/health`, then
-`http://127.0.0.1:8000/health/ready`; the second endpoint requires a configured
-and reachable database. To run the backend tests, use `python -m pytest` from
-`backend`. API tests use an isolated in-memory SQLite database; the Alembic
-migrations also support SQLite tests, but deployment uses MySQL.
-
-## Dashboard data source
-
-The dashboard connects directly to `GET /api/v1/dashboard/overview` through the
-`/api` proxy and displays live case totals, recent investigations, and recorded
-audit activity from the configured database. Evidence integrity counts remain
-honest (`0` items, no fabricated hashes) until the Evidence Repository module
-is implemented.
-
-To preview the dashboard with illustrative demonstration data instead of a live
-backend, set `VITE_CYBERTRACE_DEMO_MODE=true` when starting the frontend.
-
-The endpoint returns `metrics`, `cases`, `evidenceIntegrity`, `activityEvents`,
-and `analytics` fields. Evidence verification records are expected to include
-one current check per evidence item, with an `evidenceItemId`,
-`comparisonPerformed`, `algorithm`, and `sha256Matches` field. A result is
-counted as a verified SHA-256 match only when the check reports
-`comparisonPerformed: true`, `algorithm: "SHA-256"`, and `sha256Matches: true`.
+## Documentation
+* [Project Audit](docs/PROJECT_AUDIT.md)
+* [Architecture](docs/ARCHITECTURE.md)
+* [Security](docs/SECURITY.md)
+* [API Reference](docs/API.md)
+* [Testing](docs/TESTING.md)
+* [Deployment](docs/DEPLOYMENT.md)
+* [Roadmap](docs/ROADMAP.md)

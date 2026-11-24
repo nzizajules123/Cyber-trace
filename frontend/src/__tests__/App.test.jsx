@@ -23,12 +23,17 @@ describe("CyberTrace Frontend Auth & Workspace Flows", () => {
   });
 
   it("displays an authentication error when login fails with 401", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: { code: "http_error", message: "Invalid email or password." } }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      if (String(url).includes("/api/v1/auth/login")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: { code: "http_error", message: "Invalid email or password." } }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 401 }));
+    });
 
     render(<App />);
     fireEvent.change(await screen.findByLabelText(/Email address/i), {

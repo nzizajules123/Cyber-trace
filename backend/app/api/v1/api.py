@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.ai import router as ai_router
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.auth import audit_router, auth_router, investigators_router, org_router
 from app.api.v1.cases import router as cases_router
@@ -17,5 +18,6 @@ api_router.include_router(cases_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(evidence_router)
 api_router.include_router(analysis_router)
+api_router.include_router(ai_router)
 api_router.include_router(footprint_router)
 api_router.include_router(reports_router)

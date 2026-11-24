@@ -214,3 +214,37 @@ export function confirmPasswordRecovery({ token, newPassword }) {
     body: JSON.stringify({ token, newPassword }),
   });
 }
+
+// AI Assistant Conversations & Status
+export function getAiStatus({ signal } = {}) {
+  return apiRequest("/api/v1/ai/status", { signal });
+}
+
+export function getAiConversations({ caseId = "", signal } = {}) {
+  const qs = caseId ? `?caseId=${encodeURIComponent(caseId)}` : "";
+  return apiRequest(`/api/v1/ai/conversations${qs}`, { signal });
+}
+
+export function createAiConversation({ caseId, title = "" }) {
+  return apiRequest("/api/v1/ai/conversations", {
+    method: "POST",
+    body: JSON.stringify({ caseId, ...(title ? { title } : {}) }),
+  });
+}
+
+export function getAiConversation(conversationId, { signal } = {}) {
+  return apiRequest(`/api/v1/ai/conversations/${encodeURIComponent(conversationId)}`, { signal });
+}
+
+export function sendAiMessage(conversationId, content) {
+  return apiRequest(`/api/v1/ai/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function deleteAiConversation(conversationId) {
+  return apiRequest(`/api/v1/ai/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+  });
+}

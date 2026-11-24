@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
+import AiAssistantPage from "./components/AiAssistantPage.jsx";
 import { CaseTimelinePage, ForensicFindingsPage, LogAnalysisPage } from "./components/AnalysisPages.jsx";
 import { LoginPage, RecoverPasswordPage, RegisterPage } from "./components/AuthPages.jsx";
 import { CaseDetailsPage, CasesPage, EditCasePage, NewCasePage } from "./components/CaseManagement.jsx";
@@ -185,6 +186,7 @@ export default function App() {
           <Route path="/analysis/log-analysis" element={<ProtectedRoute><LogAnalysisPage /></ProtectedRoute>} />
           <Route path="/analysis/event-correlation" element={<ProtectedRoute><EventCorrelationPage /></ProtectedRoute>} />
           <Route path="/analysis/findings" element={<ProtectedRoute><ForensicFindingsPage /></ProtectedRoute>} />
+          <Route path="/ai-assistant" element={<ProtectedRoute><AiAssistantPage /></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
           <Route path="/investigators" element={<ProtectedRoute><InvestigatorsPage /></ProtectedRoute>} />
           <Route path="/audit-logs" element={<ProtectedRoute><AuditLogsPage /></ProtectedRoute>} />

@@ -1,25 +1,19 @@
-const TOKEN_STORAGE_KEY = "cybertrace_access_token";
 const API_BASE_URL = (import.meta.env.VITE_CYBERTRACE_API_URL?.trim() || "").replace(/\/+$/, "");
 
+// Keep token strictly in memory (never in localStorage/sessionStorage).
+// Primary browser authentication uses the backend's HttpOnly SameSite=Lax session cookie.
+let memoryAccessToken = "";
+
 export function getStoredToken() {
-  try {
-    return window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
-  } catch {
-    return "";
-  }
+  return memoryAccessToken;
 }
 
 export function setStoredToken(token) {
-  try {
-    if (token) window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
-    else window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // ignore storage errors in restricted environments
-  }
+  memoryAccessToken = token || "";
 }
 
 export function clearStoredToken() {
-  setStoredToken("");
+  memoryAccessToken = "";
 }
 
 function extractErrorMessage(payload, statusCode) {
@@ -58,6 +52,7 @@ export async function apiRequest(path, options = {}) {
   try {
     response = await fetch(url, {
       ...fetchOptions,
+      credentials: "include",
       signal: controller.signal,
       headers: {
         Accept: "application/json",
@@ -107,6 +102,7 @@ export async function downloadAuthenticatedFile(path, filename) {
   const url = `${API_BASE_URL}${path}`;
   const token = getStoredToken();
   const response = await fetch(url, {
+    credentials: "include",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {

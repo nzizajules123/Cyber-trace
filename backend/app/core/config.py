@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 24
     cookie_secure: bool = False
     rate_limit_enabled: bool = True
+    ai_provider: str = "deterministic"
     ai_provider_enabled: bool = False
     ai_allow_external_data: bool = False
     ai_provider_url: str | None = None

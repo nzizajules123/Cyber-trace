@@ -8,6 +8,7 @@ const iconPaths = {
   footprint: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></>,
   logs: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h8" /></>,
   correlate: <><circle cx="6" cy="7" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="12" cy="17" r="2" /><path d="m8 8 3 7m5-7-3 7m-5-8h8" /></>,
+  ai: <><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" /><path d="M5 18l.9 2.1L8 21l-2.1.9L5 24l-.9-2.1L2 21l2.1-.9L5 18z" /></>,
   findings: <><path d="M10 2h4M12 14v4m-7.5 4h15a2 2 0 0 0 1.7-3L14 5a2 2 0 0 0-3.4 0l-7.2 14a2 2 0 0 0 1.7 3Z" /></>,
   reports: <><path d="M3 3v18h18M8 15l4-4 4 3 5-7" /></>,
   investigators: <><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0m3-12a3 3 0 0 1 0 6m1 2a5 5 0 0 1 2 4" /></>,

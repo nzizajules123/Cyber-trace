@@ -26,6 +26,7 @@ const groups = [
       { label: "Log Analysis", icon: "logs", to: "/analysis/log-analysis" },
       { label: "Event Correlation", icon: "correlate", to: "/analysis/event-correlation" },
       { label: "Forensic Findings", icon: "findings", to: "/analysis/findings" },
+      { label: "AI Assistant", icon: "ai", to: "/ai-assistant" },
     ],
   },
   {

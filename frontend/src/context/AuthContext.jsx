@@ -9,12 +9,6 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const loadSession = useCallback(async () => {
-    const token = getStoredToken();
-    if (!token) {
-      setAuth(null);
-      setLoading(false);
-      return;
-    }
     try {
       const me = await apiRequest("/api/v1/auth/me", { skipAuthEvent: true });
       setAuth(me);
